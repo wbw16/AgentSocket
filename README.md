@@ -1,6 +1,14 @@
-# Agent 框架
+# Agent
 
-一个轻量、模块化的 Python Agent 框架，基于大模型原生 Function Calling 构建。LLM 配置与 Agent 逻辑完全解耦，所有核心模块均可替换。
+一个轻量、模块化的 Python Agent 框架，只使用大模型原生 Function Calling / Tool Use。当前版本已经移除 ReAct 文本解析路径：模型调用、工具调用、工具结果回传都走结构化 API。
+
+核心设计：
+
+- `Agent` 是唯一主入口。
+- LLM 配置完全放在 `AnthropicClient` / `OpenAIClient` 中，`Agent` 只接收预先构建好的 client。
+- 工具通过 `ToolSpec` 注册，并用 JSON Schema 暴露给模型。
+- 记忆、中间件、运行配置、工具追踪都可以替换。
+- 常用类型从顶层 `agent` 包导出。
 
 ---
 
@@ -13,13 +21,18 @@
 - [Agent 完整配置](#agent-完整配置)
 - [中间件](#中间件)
 - [自定义记忆后端](#自定义记忆后端)
+- [记忆机制研究目录](#记忆机制研究目录)
+- [JSONL 运行日志](#jsonl-运行日志)
 - [工具调用追踪](#工具调用追踪)
 - [实验对比](#实验对比)
+- [开发与测试](#开发与测试)
 - [项目结构](#项目结构)
 
 ---
 
 ## 安装
+
+要求 Python 3.11+。
 
 ```bash
 pip install anthropic          # 使用 Anthropic 模型
@@ -30,6 +43,12 @@ pip install openai             # 使用 OpenAI 或兼容接口
 
 ```bash
 pip install -e .
+```
+
+如果只是本地运行测试：
+
+```bash
+python -m pytest -v
 ```
 
 ---
@@ -126,11 +145,13 @@ from agent import from_env
 llm = from_env()
 ```
 
+`from_env()` 会读取当前工作目录下的 `.env`，但不会覆盖已经存在的环境变量。
+
 ---
 
 ## 工具注册
 
-每个工具是一个 `ToolSpec`，包含名称、描述、处理函数和参数 Schema（JSON Schema 格式）。
+每个工具是一个 `ToolSpec`，包含名称、描述、处理函数和参数 Schema（JSON Schema 格式）。工具处理函数接收一个 `dict`，返回值会被转换为字符串摘要后传回模型。
 
 ```python
 from agent import ToolSpec
@@ -307,12 +328,108 @@ class MemoryBackend(Protocol):
 
 ---
 
+## 记忆机制研究目录
+
+后续测试多种记忆机制时，把每个机制放在 `memory_backends/` 下，通常一个机制一个 `.py` 文件。核心框架不会要求注册或插件配置，只要实现 `MemoryBackend` 接口即可。
+
+```text
+memory_backends/
+├── __init__.py
+├── simple_demo.py       # 最小 demo，方便冒烟测试
+├── my_memory_v1.py      # 你的第一个实验记忆机制
+├── my_memory_v2.py      # 你的第二个实验记忆机制
+└── ...
+```
+
+内置的 `SimpleDemoMemory` 只用于确认链路通了：
+
+```python
+from agent import Agent, AnthropicClient, ToolSpec
+from agent.memory_backends.simple_demo import SimpleDemoMemory
+
+llm = AnthropicClient()
+
+agent = Agent(
+    model_client=llm,
+    tools=[],
+    memory=SimpleDemoMemory(),
+)
+```
+
+批量实验时直接换 `memory_factory`：
+
+```python
+from agent.core.experiment import ExperimentConfig
+from agent.memory_backends.simple_demo import SimpleDemoMemory
+
+config = ExperimentConfig(
+    name="simple-demo",
+    memory_factory=SimpleDemoMemory,
+    tools=[],
+    model_client=llm,
+    inputs=["测试输入 1", "测试输入 2"],
+)
+```
+
+如果某个记忆机制实现了 `snapshot()`，JSONL logger 会自动把它的内部状态保存到 `memory_snapshot` 字段；没实现就跳过。
+
+---
+
+## JSONL 运行日志
+
+`JsonlRunLogger` 会把每次 run 追加为一行 JSON，适合大量批量实验：
+
+```python
+from agent import Agent, JsonlRunLogger
+
+agent = Agent(
+    model_client=llm,
+    tools=[weather_tool],
+    memory=SimpleDemoMemory(),
+    run_logger=JsonlRunLogger("runs/agent_runs.jsonl"),
+)
+
+result = agent.run("北京今天天气怎么样？")
+```
+
+每行记录包含：
+
+```json
+{
+  "run_id": "...",
+  "timestamp": 1710000000.0,
+  "experiment_name": null,
+  "input": "北京今天天气怎么样？",
+  "final_answer": "...",
+  "stop_reason": "finished",
+  "metrics": {},
+  "action_history": [],
+  "memory_messages": [],
+  "memory_snapshot": {}
+}
+```
+
+批量实验也可以统一写入同一个 JSONL：
+
+```python
+from agent import JsonlRunLogger
+from agent.core.experiment import ExperimentHarness
+
+harness = ExperimentHarness(
+    run_logger=JsonlRunLogger("runs/experiment.jsonl"),
+)
+
+results = harness.run([config])
+```
+
+---
+
 ## 工具调用追踪
 
 实现 `ToolCallTracer` Protocol，每次工具执行后自动记录 `ToolCallTrace`：
 
 ```python
-from agent import ToolCallTrace, ToolCallTracer, ToolRegistry
+from agent import ToolCallTrace, ToolCallTracer
 
 
 class FileTracer:
@@ -398,6 +515,27 @@ for name, runs in results.items():
 
 ---
 
+## 开发与测试
+
+运行全部测试：
+
+```bash
+python -m pytest -v
+```
+
+当前测试覆盖：
+
+- `AnthropicClient` / `OpenAIClient` 新类名与 native tool calling 方法。
+- 旧的 `OpenAIModelClient` / `AnthropicModelClient` 与 `generate()` 路径不再暴露。
+- `NativeToolEngine` 对 `ToolCallTracer` 的调用。
+- `Agent` 默认配置与自定义 memory/runtime config。
+- `JsonlRunLogger` 的 JSONL 追加写入。
+- `ExperimentHarness` 批量运行时的 JSONL 记录。
+- `SimpleDemoMemory` 冒烟测试。
+- 顶层 public API 导出。
+
+---
+
 ## 项目结构
 
 ```
@@ -405,11 +543,25 @@ agent/
 ├── __init__.py          # 公共 API 导出
 ├── agent.py             # Agent 主入口
 ├── clients.py           # AnthropicClient / OpenAIClient / from_env
+├── memory_backends/
+│   ├── __init__.py
+│   └── simple_demo.py    # 最小记忆机制 demo
 └── core/
     ├── engine_native.py # NativeToolEngine（执行引擎）
     ├── experiment.py    # ExperimentHarness
     ├── memory.py        # InMemorySessionMemory
     ├── middleware.py    # MiddlewareChain
-    ├── tools.py         # ToolRegistry + ToolCallTracer
+    ├── run_logger.py    # JsonlRunLogger
+    ├── tools.py         # ToolRegistry
     └── types.py         # 所有 dataclass / Protocol 定义
+```
+
+已移除的旧路径：
+
+```text
+core/engine.py
+core/parser.py
+core/protocol.py
+modular_agent.py
+adapters/
 ```

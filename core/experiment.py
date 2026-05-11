@@ -21,6 +21,9 @@ class ExperimentConfig:
 
 
 class ExperimentHarness:
+    def __init__(self, run_logger: object | None = None) -> None:
+        self.run_logger = run_logger
+
     def run(self, configs: list[ExperimentConfig]) -> dict[str, list[AgentRunResult]]:
         results: dict[str, list[AgentRunResult]] = {}
         for config in configs:
@@ -35,6 +38,14 @@ class ExperimentHarness:
                     middleware_chain=MiddlewareChain(middlewares=[]),
                     runtime_config=config.runtime_config,
                 )
-                run_results.append(engine.run(user_input))
+                result = engine.run(user_input)
+                if self.run_logger is not None:
+                    self.run_logger.record_run(
+                        user_input=user_input,
+                        result=result,
+                        memory=memory,
+                        experiment_name=config.name,
+                    )
+                run_results.append(result)
             results[config.name] = run_results
         return results

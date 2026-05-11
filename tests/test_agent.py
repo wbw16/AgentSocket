@@ -1,7 +1,9 @@
 from unittest.mock import MagicMock
+import json
 
 from agent.agent import Agent
 from agent.core.memory import InMemorySessionMemory
+from agent.core.run_logger import JsonlRunLogger
 from agent.core.types import NativeModelResponse, RuntimeConfig
 
 
@@ -51,3 +53,17 @@ def test_agent_custom_memory():
     agent = Agent(model_client=client, tools=[], memory=memory)
     agent.run("test")
     assert len(memory.messages()) == 1
+
+
+def test_agent_logs_run_when_logger_present(tmp_path):
+    path = tmp_path / "agent.jsonl"
+    client = _make_client("logged")
+    agent = Agent(model_client=client, tools=[], run_logger=JsonlRunLogger(path))
+
+    result = agent.run("hello")
+
+    assert result.final_answer == "logged"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["input"] == "hello"
+    assert record["final_answer"] == "logged"
+    assert record["memory_messages"] == [{"role": "user", "content": "hello"}]

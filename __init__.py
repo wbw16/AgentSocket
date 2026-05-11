@@ -4,6 +4,7 @@ from agent.agent import Agent
 from agent.clients import AnthropicClient, OpenAIClient, from_env
 from agent.core.memory import InMemorySessionMemory
 from agent.core.middleware import MiddlewareChain
+from agent.core.run_logger import JsonlRunLogger
 from agent.core.tools import ToolRegistry
 from agent.core.types import (
     AgentRunResult,
@@ -20,6 +21,7 @@ __all__ = [
     "OpenAIClient",
     "from_env",
     "InMemorySessionMemory",
+    "JsonlRunLogger",
     "MiddlewareChain",
     "ToolRegistry",
     "AgentRunResult",

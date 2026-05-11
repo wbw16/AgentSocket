@@ -4,6 +4,7 @@ def test_top_level_imports():
         AgentRunResult,
         AnthropicClient,
         InMemorySessionMemory,
+        JsonlRunLogger,
         MemoryBackend,
         MiddlewareChain,
         OpenAIClient,
@@ -26,5 +27,6 @@ def test_top_level_imports():
     assert MemoryBackend is not None
     assert ToolCallTracer is not None
     assert InMemorySessionMemory is not None
+    assert JsonlRunLogger is not None
     assert MiddlewareChain is not None
     assert ToolRegistry is not None
