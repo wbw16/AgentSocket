@@ -16,10 +16,18 @@ from typing import TYPE_CHECKING, Any
 
 from agent.core.middleware import MiddlewareChain
 from agent.core.tools import ToolRegistry
-from agent.core.types import AgentRunResult, MemoryBackend, ParsedStep, RuntimeConfig, ToolCallRecord, ToolResult
+from agent.core.types import (
+    AgentRunResult,
+    MemoryBackend,
+    ParsedStep,
+    RuntimeConfig,
+    ToolCallRecord,
+    ToolCallTrace,
+    ToolResult,
+)
 
 if TYPE_CHECKING:
-    from agent.clients import AnthropicModelClient, OpenAIModelClient
+    from agent.clients import AnthropicClient, OpenAIClient
 
 
 def _coerce_action_input(value: Any) -> dict[str, Any]:
@@ -48,7 +56,7 @@ class NativeToolEngine:
     For OpenAI-compatible: `system_prompt` is prepended as a system message.
     """
 
-    model_client: Any  # OpenAIModelClient | AnthropicModelClient
+    model_client: Any  # OpenAIClient | AnthropicClient
     tool_registry: ToolRegistry
     memory: MemoryBackend
     middleware_chain: MiddlewareChain
@@ -130,6 +138,7 @@ class NativeToolEngine:
                     action_input = _coerce_action_input(decision.rewritten_input)
 
                 # Isolate handler-side mutations from recorded action_input.
+                tool_start = time.time()
                 raw_result = tool.handler(dict(action_input))
                 result = ToolResult(name=tool.name, output=raw_result, summary=str(raw_result))
                 result = self.middleware_chain.after_tool_call(
@@ -137,6 +146,21 @@ class NativeToolEngine:
                     ParsedStep(thought="", action=tc.name, action_input=action_input),
                     result,
                 )
+                tool_end = time.time()
+
+                if self.tool_registry.tracer is not None:
+                    self.tool_registry.tracer.record(
+                        ToolCallTrace(
+                            session_id=session_id,
+                            step_index=len(steps),
+                            tool_name=tc.name,
+                            arguments=action_input,
+                            result_summary=result.summary,
+                            duration_ms=(tool_end - tool_start) * 1000,
+                            middleware_decision=decision.action,
+                            timestamp=tool_start,
+                        )
+                    )
 
                 self.memory.append_action(
                     ToolCallRecord(
@@ -164,7 +188,7 @@ class NativeToolEngine:
     # ------------------------------------------------------------------
 
     def _is_anthropic(self) -> bool:
-        return type(self.model_client).__name__ == "AnthropicModelClient"
+        return type(self.model_client).__name__ == "AnthropicClient"
 
     def _initial_messages(self, user_input: str) -> list[dict]:
         if self._is_anthropic():
