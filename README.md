@@ -1,6 +1,6 @@
-# Agent
+# AgentSocket
 
-一个轻量、模块化的 Python Agent 框架，只使用大模型原生 Function Calling / Tool Use。当前版本已经移除 ReAct 文本解析路径：模型调用、工具调用、工具结果回传都走结构化 API。
+一个轻量、模块化的 Python AgentSocket 框架，只使用大模型原生 Function Calling / Tool Use。当前版本已经移除 ReAct 文本解析路径：模型调用、工具调用、工具结果回传都走结构化 API。
 
 核心设计：
 

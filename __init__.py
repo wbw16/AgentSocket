@@ -1,4 +1,6 @@
-"""Argus modular agent package."""
+"""AgentSocket 模块化代理系统的包初始化文件。
+提供了顶层导入使用的主要对象及类型声明。
+"""
 
 from agent.agent import Agent
 from agent.clients import AnthropicClient, OpenAIClient, from_env

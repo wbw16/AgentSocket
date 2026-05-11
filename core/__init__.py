@@ -1,1 +1,1 @@
-"""Core runtime building blocks for the modular agent."""
+"""模块化代理(Agent)机制的核心运行时组件与基础模块定义代码包。"""

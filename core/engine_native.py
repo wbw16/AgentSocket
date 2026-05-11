@@ -1,9 +1,9 @@
-"""Native tool-calling engine.
+"""原生工具调用引擎。
 
-Uses the model API's built-in tool calling (OpenAI function calling /
-Anthropic tool use) instead of the ReAct text-parsing approach.
+此引擎使用了各大模型API内置的工具调用（例如 OpenAI 的 function calling 或 Anthropic 的 tool use）
+以取代传统的 ReAct 文本生成及解析模式。
 
-Drop-in replacement for AgentEngine.run() — returns the same AgentRunResult.
+作为 AgentEngine.run() 的直接替代模块，它会返回相同的 AgentRunResult 结构对象。
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 def _coerce_action_input(value: Any) -> dict[str, Any]:
-    """Best-effort normalize model tool arguments into an object-like dict."""
+    """尽可能地将模型输出的工具参数规范化为字典（dict）对象。"""
     if isinstance(value, Mapping):
         return dict(value)
     if value is None:
@@ -45,33 +45,37 @@ def _coerce_action_input(value: Any) -> dict[str, Any]:
 
 @dataclass(slots=True)
 class NativeToolEngine:
-    """Runs the agent loop using the model's native tool calling API.
+    """使用模型的原生工具调用（Native Tool Calling）API来运行代理（Agent）的执行循环。
 
-    The message history (`_raw_messages`) is kept in the provider's native
-    format so it can be passed directly to the API each turn — no text parsing
-    required.
+    消息历史记录(`_raw_messages`)保留了对应供应商指定的原有格式，以便每次轮流迭代直接发送结 API，
+    完全省下了解析生成文本的繁琐过程。
 
-    For Anthropic: pass `system_prompt` to set the system message (Anthropic
-    keeps it separate from the messages list).
-    For OpenAI-compatible: `system_prompt` is prepended as a system message.
+    对于 Anthropic: 
+        通过传入 `system_prompt` 参数来设定系统提示信息 (Anthropic 的 API 中，系统消息是与消息列表分离的)，
+    对于兼容 OpenAI 的 API: 
+        将 `system_prompt` 自动置于首条作为单独的一条系统信息 (System Message)。
     """
 
-    model_client: Any  # OpenAIClient | AnthropicClient
-    tool_registry: ToolRegistry
-    memory: MemoryBackend
-    middleware_chain: MiddlewareChain
-    runtime_config: RuntimeConfig
+    model_client: Any  # OpenAIClient | AnthropicClient 的实例
+    tool_registry: ToolRegistry  # 工具注册表
+    memory: MemoryBackend        # 用于记录 Agent 会话记忆的后端
+    middleware_chain: MiddlewareChain  # 用于请求检查拦截的中间件责任链
+    runtime_config: RuntimeConfig      # Agent 执行期的配置项
+    # 系统级别的默认提示词
     system_prompt: str = (
         "You are a helpful assistant. Use the provided tools to complete tasks. "
         "When you have a final answer, respond in plain text without calling any tool."
     )
+    # 保存原始的对话上下文数组格式，用于跟大模型交互
     _raw_messages: list[dict] = field(default_factory=list)
 
     # ------------------------------------------------------------------
-    # Public interface
+    # 公开接口 (Public interface)
     # ------------------------------------------------------------------
 
     def run(self, user_input: str) -> AgentRunResult:
+        """接收用户的文本输入，运行推理及多轮工具调用的全流程，并返回最终结果。"""
+        # 初始化消息记录，将用户输入加到末尾
         self._raw_messages = self._initial_messages(user_input)
         self.memory.append_message("user", user_input)
 
@@ -80,9 +84,11 @@ class NativeToolEngine:
         started = time.time()
         tools = list(self.tool_registry.tools)
 
+        # 进入主循环，上限受 runtime_config.max_steps 控制
         for _ in range(self.runtime_config.max_steps):
             response = self._call_model(tools)
 
+            # 当返回包含 final_answer 时，说明任务结束
             if response.final_answer is not None:
                 return AgentRunResult(
                     session_id=session_id,
@@ -93,6 +99,7 @@ class NativeToolEngine:
                     metrics={"duration_seconds": time.time() - started},
                 )
 
+            # 如果模型没有给出有效工具调用，也会提前结束
             if not response.tool_calls:
                 return AgentRunResult(
                     session_id=session_id,
@@ -103,27 +110,30 @@ class NativeToolEngine:
                     metrics={"duration_seconds": time.time() - started},
                 )
 
-            # Add assistant message to history before executing tools
+            # 在真正触发工具前，首先把助手的原格式消息加进对话历史
             self._raw_messages.append(response.raw_assistant_message)
 
-            # Execute each tool call; collect results for multi-turn history
-            pending_results: list[tuple[str, str, str]] = []  # (call_id, tool_name, result_str)
+            # 执行需要调用的每个工具; 把拿到的结果临时存在这里，用于最后追加至整体历史中
+            pending_results: list[tuple[str, str, str]] = []  # 分别为 (call_id, 工具名称, 返回文本)
 
             for tc in response.tool_calls:
                 try:
                     tool = self.tool_registry.get(tc.name)
                 except KeyError:
+                    # 碰到未注册的工具时记录错误
                     pending_results.append((tc.call_id, tc.name, f"Error: unknown tool '{tc.name}'"))
                     continue
 
                 action_input = _coerce_action_input(tc.arguments)
 
-                # Middleware pre-check
+                # 工具被调用前的中间件拦截检查（例如做风控校验）
                 decision = self.middleware_chain.before_tool_call(
                     tool,
                     ParsedStep(thought="", action=tc.name, action_input=action_input),
                     action_input,
                 )
+                
+                # 若被拦截或者升级决策，则直接结束本轮
                 if decision.action in {"deny", "escalate"}:
                     return AgentRunResult(
                         session_id=session_id,
@@ -134,13 +144,16 @@ class NativeToolEngine:
                         metrics={"duration_seconds": time.time() - started, "reason": decision.reason},
                     )
 
+                # 中间件有权篡改或重写入参
                 if decision.rewritten_input is not None:
                     action_input = _coerce_action_input(decision.rewritten_input)
 
-                # Isolate handler-side mutations from recorded action_input.
+                # 隔绝运行器中可能产生的不安全变量变动，并调用函数
                 tool_start = time.time()
                 raw_result = tool.handler(dict(action_input))
                 result = ToolResult(name=tool.name, output=raw_result, summary=str(raw_result))
+                
+                # 工具调用后的再次经过中间件把关或结果重写
                 result = self.middleware_chain.after_tool_call(
                     tool,
                     ParsedStep(thought="", action=tc.name, action_input=action_input),
@@ -148,6 +161,7 @@ class NativeToolEngine:
                 )
                 tool_end = time.time()
 
+                # 如果存在 tracer，则提交一份记录
                 if self.tool_registry.tracer is not None:
                     self.tool_registry.tracer.record(
                         ToolCallTrace(
@@ -162,6 +176,7 @@ class NativeToolEngine:
                         )
                     )
 
+                # 留下对本次工具调用的历史状态
                 self.memory.append_action(
                     ToolCallRecord(
                         tool=tool.name,
@@ -171,9 +186,10 @@ class NativeToolEngine:
                 )
                 pending_results.append((tc.call_id, tc.name, result.summary))
 
-            # Append tool results to history in provider-correct format
+            # 追加工具返回的结果（将统一化为对应模型的 API 的格式）
             self._append_tool_results(pending_results)
 
+        # 超出规定的最大步数限制后结束运行
         return AgentRunResult(
             session_id=session_id,
             final_answer="",
@@ -184,24 +200,27 @@ class NativeToolEngine:
         )
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # 内部助手函数 (Internal helpers)
     # ------------------------------------------------------------------
 
     def _is_anthropic(self) -> bool:
+        """检查当前所载入的模型 API 是不是 Anthropic 种类。"""
         return type(self.model_client).__name__ == "AnthropicClient"
 
     def _initial_messages(self, user_input: str) -> list[dict]:
+        """依据提供商构建会话开局阶段的历史消息集合."""
         if self._is_anthropic():
-            # Anthropic: system is passed separately; messages start with user
+            # 对于 Anthropic:系统消息不会放入消息列表本身而是以另一个参数下发，所以这里以user起手
             return [{"role": "user", "content": user_input}]
         else:
-            # OpenAI: system message prepended
+            # 对于 OpenAI 及同类:需要在 messages 首部塞上一个 system 节点
             return [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": user_input},
             ]
 
     def _call_model(self, tools):
+        """通用模型请求入口。把工具结构一起传给相应的 LLM 客户端 API """
         if self._is_anthropic():
             return self.model_client.call_with_tools(
                 self._raw_messages,
@@ -211,10 +230,10 @@ class NativeToolEngine:
         return self.model_client.call_with_tools(self._raw_messages, tools)
 
     def _append_tool_results(self, results: list[tuple[str, str, str]]) -> None:
-        """Add tool results to history in the provider-correct format.
+        """向当前的聊天记录中正确插入带有工具调用返回结果的上下文消息。
 
-        OpenAI: one {"role": "tool", ...} message per result.
-        Anthropic: all results bundled into a single user message with a list of tool_result blocks.
+        OpenAI: 为每一个调用的结果加上单独的一条 {"role": "tool", ...} 格式的日志。
+        Anthropic: 它们需要统一被组合进同一条属于 "user" 的消息结构里，通过 type 等于 tool_result 标出。
         """
         if self._is_anthropic():
             blocks = [
