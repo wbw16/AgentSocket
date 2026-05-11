@@ -114,6 +114,10 @@ class ToolCallTrace:
     timestamp: float
 
 
+class ToolCallTracer(Protocol):
+    def record(self, trace: ToolCallTrace) -> None: ...
+
+
 class MemoryBackend(Protocol):
     def append_message(self, role: str, content: str) -> None: ...
     def append_action(self, record: ToolCallRecord) -> None: ...

@@ -2,13 +2,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
 
-from agent.core.types import ToolCallTrace, ToolSpec
-
-
-class ToolCallTracer(Protocol):
-    def record(self, trace: ToolCallTrace) -> None: ...
+from agent.core.types import ToolCallTracer, ToolSpec
 
 
 @dataclass(slots=True)
