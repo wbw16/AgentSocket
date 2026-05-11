@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+if __name__ == "agent":
+    __path__ = [str(Path(__file__).parent)]  # type: ignore[name-defined]
+
 from agent.core.engine_native import NativeToolEngine
 from agent.core.memory import InMemorySessionMemory
 from agent.core.middleware import MiddlewareChain
@@ -49,3 +54,25 @@ class Agent:
 
     def run(self, user_input: str) -> AgentRunResult:
         return self._engine.run(user_input)
+
+
+if __name__ == "agent":
+    from agent.clients import AnthropicClient, OpenAIClient, from_env
+    from agent.core.memory import InMemorySessionMemory
+    from agent.core.types import ToolCallTrace
+
+    __all__ = [
+        "Agent",
+        "AnthropicClient",
+        "OpenAIClient",
+        "from_env",
+        "InMemorySessionMemory",
+        "MiddlewareChain",
+        "ToolRegistry",
+        "AgentRunResult",
+        "MemoryBackend",
+        "RuntimeConfig",
+        "ToolCallTrace",
+        "ToolCallTracer",
+        "ToolSpec",
+    ]
