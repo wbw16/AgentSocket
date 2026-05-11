@@ -150,6 +150,9 @@ class OpenAIClient:
                     for tc in msg.tool_calls
                 ],
             }
+            reasoning_content = _value(msg, "reasoning_content")
+            if reasoning_content is not None:
+                raw_assistant["reasoning_content"] = reasoning_content
             return NativeModelResponse(
                 final_answer=None,
                 tool_calls=native_calls,
