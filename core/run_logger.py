@@ -46,6 +46,10 @@ class JsonlRunLogger:
             "metrics": _jsonable(dict(result.metrics)),       # 各项性能参数指标
             "action_history": _jsonable(result.action_history), # 使用工具的历史记录
             "memory_messages": _jsonable(memory.messages()) if memory is not None else [], # 发给模型的完整历史对话
+            "memory_recall": {                                # 本次 run 注入到 prompt 的召回内容
+                "query": user_input,
+                "items": _jsonable(result.memory_recall),
+            },
         }
 
         # 尝试将整个记忆的结构或者快照加入进去进行存档

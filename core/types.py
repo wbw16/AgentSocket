@@ -92,6 +92,19 @@ class ToolCallRecord:
 
 
 @dataclass(slots=True)
+class MemoryRecall:
+    """单条召回记忆的统一载体。
+
+    引擎只会读取 ``text`` 用于 prompt 注入和日志；其余字段由 backend 自主填充，
+    供评估、rerank、debug、追溯等用途。保持最小约束，避免绑定任一 backend 的内部结构。
+    """
+    text: str                                  # 注入 prompt 时使用的文本
+    source_id: str | None = None               # backend 内部的记忆 id，用于追溯
+    score: float | None = None                 # 相关度或其他打分
+    metadata: JSONDict = field(default_factory=dict)  # backend 自定义的附加字段
+
+
+@dataclass(slots=True)
 class ToolResult:
     """
     单次工具调用的返回结果包装。
@@ -134,6 +147,7 @@ class AgentRunResult:
     action_history: list[ToolCallRecord]      # 工具调用的历史记录
     stop_reason: str                          # 结束原因（"finished", "max_steps", "error"等）
     metrics: Mapping[str, Any]                # 各项运行指标（耗时、消耗 token 等）
+    memory_recall: list[MemoryRecall] = field(default_factory=list)  # 本次运行开头从记忆中召回并注入 prompt 的内容
 
 
 @dataclass(slots=True)
@@ -160,13 +174,16 @@ class ToolCallTracer(Protocol):
 
 class MemoryBackend(Protocol):
     """
-    记忆后端的抽象协议。处理短期消息记录与检索、以及工具历史等。
+    记忆后端的抽象协议。
+    引擎以统一的方式投喂写入信号 (append_message / append_action)，
+    并在每次 run 开头调用 retrieve(query) 获取要注入 prompt 的记忆。
+    "召回多少 / 写入什么 / 如何演化" 由具体 backend 自行决定。
     """
     def append_message(self, role: str, content: str) -> None: ...
     def append_action(self, record: ToolCallRecord) -> None: ...
     def messages(self) -> list[dict[str, str]]: ...
     def action_history(self) -> list[ToolCallRecord]: ...
-    def retrieve(self, query: str, k: int = 5) -> list[dict]: ...
+    def retrieve(self, query: str) -> list["MemoryRecall"]: ...
     def summarize(self, max_tokens: int) -> str: ...
 
 

@@ -11,6 +11,7 @@ from agent.core.tools import ToolRegistry
 from agent.core.types import (
     AgentRunResult,
     MemoryBackend,
+    MemoryRecall,
     RuntimeConfig,
     ToolCallTrace,
     ToolCallTracer,
@@ -28,6 +29,7 @@ __all__ = [
     "ToolRegistry",
     "AgentRunResult",
     "MemoryBackend",
+    "MemoryRecall",
     "RuntimeConfig",
     "ToolCallTrace",
     "ToolCallTracer",

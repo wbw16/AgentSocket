@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from agent.core.types import ToolCallRecord
+from agent.core.types import MemoryRecall, ToolCallRecord
 
 
 @dataclass(slots=True)
 class SimpleDemoMemory:
     """一个微型简单的记忆存储后端，主要用于冒烟测试(smoke-testing)或演示如何覆盖和替换记忆模块。"""
 
-    _messages: list[dict[str, str]] = field(default_factory=list)        # 保存消息队列的历史字典 
+    _messages: list[dict[str, str]] = field(default_factory=list)        # 保存消息队列的历史字典
     _action_history: list[ToolCallRecord] = field(default_factory=list)   # 存储使用过的动作工具纪录
+    recall_k: int = 5                                                     # retrieve 默认返回最近 k 条
 
     def append_message(self, role: str, content: str) -> None:
         """追加一条系统或角色的对话消息到记录表中。"""
@@ -28,9 +29,17 @@ class SimpleDemoMemory:
         """获得当前的动作列表"""
         return list(self._action_history)
 
-    def retrieve(self, query: str, k: int = 5) -> list[dict]:
-        """以极为简略地手段通过按倒序来粗糙寻找相关联的 k 条讯息反馈给调用者。"""
-        return self.messages()[-k:]
+    def retrieve(self, query: str) -> list[MemoryRecall]:
+        """冒烟用的粗糙召回：返回最近 recall_k 条消息，包成 MemoryRecall。"""
+        recent = self._messages[-self.recall_k:]
+        return [
+            MemoryRecall(
+                text=f"{msg['role']}: {msg['content']}",
+                source_id=f"msg:{idx}",
+                metadata={"role": msg["role"]},
+            )
+            for idx, msg in enumerate(recent, start=max(0, len(self._messages) - self.recall_k))
+        ]
 
     def summarize(self, max_tokens: int) -> str:
         """以最大 Token 大小限制来简单地按换行缝合聊天日志以作摘要。"""

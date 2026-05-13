@@ -19,6 +19,7 @@ from agent.core.tools import ToolRegistry
 from agent.core.types import (
     AgentRunResult,
     MemoryBackend,
+    MemoryRecall,
     ParsedStep,
     RuntimeConfig,
     ToolCallRecord,
@@ -68,6 +69,8 @@ class NativeToolEngine:
     )
     # 保存原始的对话上下文数组格式，用于跟大模型交互
     _raw_messages: list[dict] = field(default_factory=list)
+    # 当前 run 的召回内容（Anthropic 分支在 _call_model 中拼进 system_prompt 使用）
+    _pending_recall_block: str = ""
 
     # ------------------------------------------------------------------
     # 公开接口 (Public interface)
@@ -75,9 +78,17 @@ class NativeToolEngine:
 
     def run(self, user_input: str) -> AgentRunResult:
         """接收用户的文本输入，运行推理及多轮工具调用的全流程，并返回最终结果。"""
-        # 初始化消息记录，将用户输入加到末尾
-        self._raw_messages = self._initial_messages(user_input)
+        # 写入信号：用户输入先进记忆，backend 自己决定是否落库
         self.memory.append_message("user", user_input)
+
+        # 召回：统一在 run 开头做一次，backend 决定返回什么 / 返回多少
+        recalled: list[MemoryRecall] = list(self.memory.retrieve(user_input) or [])
+
+        # 缓存供 Anthropic 分支在 _call_model 中拼进 system_prompt
+        self._pending_recall_block = self._format_recall(recalled)
+
+        # 初始化消息记录；如有召回内容，会拼到 system 段或 user 段之前
+        self._raw_messages = self._initial_messages(user_input, recalled)
 
         steps: list[ParsedStep] = []
         session_id = str(uuid.uuid4())
@@ -90,6 +101,8 @@ class NativeToolEngine:
 
             # 当返回包含 final_answer 时，说明任务结束
             if response.final_answer is not None:
+                # 写入信号：最终回答入记忆，闭合 user/assistant 语义对
+                self.memory.append_message("assistant", response.final_answer)
                 return AgentRunResult(
                     session_id=session_id,
                     final_answer=response.final_answer,
@@ -97,6 +110,7 @@ class NativeToolEngine:
                     action_history=self.memory.action_history(),
                     stop_reason="finished",
                     metrics={"duration_seconds": time.time() - started},
+                    memory_recall=recalled,
                 )
 
             # 如果模型没有给出有效工具调用，也会提前结束
@@ -108,6 +122,7 @@ class NativeToolEngine:
                     action_history=self.memory.action_history(),
                     stop_reason="no_tool_calls",
                     metrics={"duration_seconds": time.time() - started},
+                    memory_recall=recalled,
                 )
 
             # 在真正触发工具前，首先把助手的原格式消息加进对话历史
@@ -142,6 +157,7 @@ class NativeToolEngine:
                         action_history=self.memory.action_history(),
                         stop_reason="denied" if decision.action == "deny" else "escalated",
                         metrics={"duration_seconds": time.time() - started, "reason": decision.reason},
+                        memory_recall=recalled,
                     )
 
                 # 中间件有权篡改或重写入参
@@ -197,6 +213,7 @@ class NativeToolEngine:
             action_history=self.memory.action_history(),
             stop_reason="max_steps_exceeded",
             metrics={"duration_seconds": time.time() - started},
+            memory_recall=recalled,
         )
 
     # ------------------------------------------------------------------
@@ -207,25 +224,45 @@ class NativeToolEngine:
         """检查当前所载入的模型 API 是不是 Anthropic 种类。"""
         return type(self.model_client).__name__ == "AnthropicClient"
 
-    def _initial_messages(self, user_input: str) -> list[dict]:
-        """依据提供商构建会话开局阶段的历史消息集合."""
+    @staticmethod
+    def _format_recall(recalled: list[MemoryRecall]) -> str:
+        """把召回内容格式化成注入 prompt 用的 <memory> 段，空召回返回空串。"""
+        if not recalled:
+            return ""
+        lines = [f"- {item.text}" for item in recalled if item.text]
+        if not lines:
+            return ""
+        return "<memory>\n" + "\n".join(lines) + "\n</memory>"
+
+    def _initial_messages(self, user_input: str, recalled: list[MemoryRecall]) -> list[dict]:
+        """依据提供商构建会话开局阶段的历史消息集合。
+
+        召回注入策略固定为：
+        - OpenAI 兼容：在原 system 消息之后追加一条新的 system 消息承载 <memory>
+        - Anthropic：由 _call_model 把 <memory> 拼到 system_prompt 尾部
+        空召回则完全等价于注入前行为。
+        """
+        recall_block = self._format_recall(recalled)
         if self._is_anthropic():
-            # 对于 Anthropic:系统消息不会放入消息列表本身而是以另一个参数下发，所以这里以user起手
+            # Anthropic 的 system 以参数形式下发，召回注入在 _call_model 完成
             return [{"role": "user", "content": user_input}]
-        else:
-            # 对于 OpenAI 及同类:需要在 messages 首部塞上一个 system 节点
-            return [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_input},
-            ]
+        messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
+        if recall_block:
+            messages.append({"role": "system", "content": recall_block})
+        messages.append({"role": "user", "content": user_input})
+        return messages
 
     def _call_model(self, tools):
-        """通用模型请求入口。把工具结构一起传给相应的 LLM 客户端 API """
+        """通用模型请求入口。把工具结构一起传给相应的 LLM 客户端 API。"""
         if self._is_anthropic():
+            # Anthropic 的召回块拼到 system 尾部，与 OpenAI 分支（额外 system 消息）行为对齐
+            system = self.system_prompt
+            if self._pending_recall_block:
+                system = f"{system}\n\n{self._pending_recall_block}"
             return self.model_client.call_with_tools(
                 self._raw_messages,
                 tools,
-                system=self.system_prompt,
+                system=system,
             )
         return self.model_client.call_with_tools(self._raw_messages, tools)
 

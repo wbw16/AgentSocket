@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from agent.core.types import ToolCallRecord
+from agent.core.types import MemoryRecall, ToolCallRecord
 
 
 @dataclass(slots=True)
@@ -10,6 +10,7 @@ class InMemorySessionMemory:
     """
     内存中的会话记忆实现类。
     用于在纯内存中记录对话消息和工具执行历史，适用于不需要持久化的单次运行或测试环境。
+    不做召回：retrieve 永远返回空列表，相当于 NoMemory baseline。
     """
     _messages: list[dict[str, str]] = field(default_factory=list)        # 存储对话历史
     _action_history: list[ToolCallRecord] = field(default_factory=list)   # 存储工具调用历史
@@ -38,11 +39,8 @@ class InMemorySessionMemory:
         """
         return list(self._action_history)
 
-    def retrieve(self, query: str, k: int = 5) -> list[dict]:
-        """
-        语义检索接口占位符，返回与查询最相关的前 k 条记忆。
-        (基础实现暂时为空)。
-        """
+    def retrieve(self, query: str) -> list[MemoryRecall]:
+        """NoMemory baseline：不召回任何记忆。"""
         return []
 
     def summarize(self, max_tokens: int) -> str:

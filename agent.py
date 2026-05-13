@@ -75,7 +75,7 @@ if __name__ == "agent":
     from agent.clients import AnthropicClient, OpenAIClient, from_env
     from agent.core.memory import InMemorySessionMemory
     from agent.core.run_logger import JsonlRunLogger
-    from agent.core.types import ToolCallTrace
+    from agent.core.types import MemoryRecall, ToolCallTrace
 
     # 定义模块公开导出的相关类和方法
     __all__ = [
@@ -89,6 +89,7 @@ if __name__ == "agent":
         "ToolRegistry",
         "AgentRunResult",
         "MemoryBackend",
+        "MemoryRecall",
         "RuntimeConfig",
         "ToolCallTrace",
         "ToolCallTracer",
